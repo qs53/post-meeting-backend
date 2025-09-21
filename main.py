@@ -58,7 +58,13 @@ except Exception as e:
 
 # Create Flask app
 app = Flask(__name__)
-CORS(app)
+
+# Configure CORS to allow S3 frontend
+CORS(app, origins=[
+    "http://localhost:3000",  # Local development
+    "http://post-meeting-ui.s3-website-us-west-2.amazonaws.com",  # S3 frontend
+    "https://post-meeting-ui.s3-website-us-west-2.amazonaws.com"   # S3 frontend with HTTPS
+])
 
 # In-memory storage for demo (replace with database in production)
 user_credentials = {}
