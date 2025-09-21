@@ -331,60 +331,106 @@ def get_user_profile():
 @app.route('/user/google-accounts')
 def get_google_accounts():
     """Get user's connected Google accounts"""
-    # In a real implementation, this would fetch from database
-    return jsonify([
-        {
-            "id": 1,
-            "email": "test@example.com",
-            "name": "Test User",
-            "picture": None,
-            "is_active": True,
-            "is_primary": True,
-            "status": "active",
-            "events_count": 15,
-            "last_sync": "2024-01-20T10:00:00Z",
-            "error_message": None
-        },
-        {
-            "id": 2,
-            "email": "work@company.com",
-            "name": "Work Account",
-            "picture": None,
-            "is_active": True,
-            "is_primary": False,
-            "status": "active",
-            "events_count": 8,
-            "last_sync": "2024-01-20T09:30:00Z",
-            "error_message": None
-        }
-    ])
+    try:
+        if not user_credentials:
+            return jsonify([])
+        
+        accounts = []
+        for user_id, credentials in user_credentials.items():
+            # Get events count for this account
+            events_count = 0
+            try:
+                if google_calendar_service:
+                    events = google_calendar_service.get_calendar_events(credentials)
+                    events_count = len(events)
+            except Exception as e:
+                logger.error(f"Error getting events count for user {user_id}: {e}")
+            
+            account = {
+                "id": user_id,
+                "email": credentials.get('email', 'unknown'),
+                "name": credentials.get('name', 'Unknown'),
+                "picture": credentials.get('picture'),
+                "is_active": True,
+                "is_primary": len(accounts) == 0,  # First account is primary
+                "status": "active",
+                "events_count": events_count,
+                "last_sync": "2024-01-20T10:00:00Z",  # Could be improved to track actual sync time
+                "error_message": None
+            }
+            accounts.append(account)
+        
+        return jsonify(accounts)
+        
+    except Exception as e:
+        logger.error(f"Error getting Google accounts: {e}")
+        return jsonify({"error": "Failed to get Google accounts"}), 500
 
 @app.route('/user/google-accounts/connect', methods=['POST'])
 def connect_google_account():
     """Initiate Google account connection"""
-    return jsonify({
-        "auth_url": "https://accounts.google.com/o/oauth2/auth?client_id=871559871580-9j8c3hi70u9pobf0u4mu6qg0ofue32ek.apps.googleusercontent.com&redirect_uri=http://localhost:8000/auth/google/callback&response_type=code&scope=openid email profile https://www.googleapis.com/auth/calendar.readonly",
-        "state": "connect_account"
-    })
+    try:
+        if google_calendar_service:
+            auth_url = google_calendar_service.get_auth_url("connect_account")
+            return jsonify({
+                "auth_url": auth_url,
+                "state": "connect_account"
+            })
+        else:
+            return jsonify({"error": "Google Calendar service not available"}), 503
+    except Exception as e:
+        logger.error(f"Error generating Google auth URL: {e}")
+        return jsonify({"error": "Failed to generate auth URL"}), 500
 
 @app.route('/user/google-accounts/<int:account_id>/disconnect', methods=['DELETE'])
 def disconnect_google_account(account_id):
     """Disconnect a Google account"""
-    # In a real implementation, this would remove from database
-    return jsonify({
-        "message": "Google account disconnected successfully",
-        "account_id": account_id
-    })
+    try:
+        account_id_str = str(account_id)
+        if account_id_str in user_credentials:
+            del user_credentials[account_id_str]
+            logger.info(f"Disconnected Google account: {account_id}")
+            return jsonify({
+                "message": "Google account disconnected successfully",
+                "account_id": account_id
+            })
+        else:
+            return jsonify({"error": "Account not found"}), 404
+    except Exception as e:
+        logger.error(f"Error disconnecting Google account: {e}")
+        return jsonify({"error": "Failed to disconnect account"}), 500
 
 @app.route('/user/google-accounts/<int:account_id>/sync', methods=['POST'])
 def sync_google_account(account_id):
     """Sync calendar events for a specific Google account"""
-    # In a real implementation, this would sync calendar events
-    return jsonify({
-        "message": "Account synced successfully",
-        "account_id": account_id,
-        "events_synced": 5
-    })
+    try:
+        account_id_str = str(account_id)
+        if account_id_str not in user_credentials:
+            return jsonify({"error": "Account not found"}), 404
+        
+        credentials = user_credentials[account_id_str]
+        events_synced = 0
+        
+        if google_calendar_service:
+            try:
+                events = google_calendar_service.get_calendar_events(credentials)
+                events_synced = len(events)
+                logger.info(f"Synced {events_synced} events for account {account_id}")
+            except Exception as e:
+                logger.error(f"Error syncing events for account {account_id}: {e}")
+                return jsonify({"error": f"Failed to sync events: {str(e)}"}), 500
+        else:
+            return jsonify({"error": "Google Calendar service not available"}), 503
+        
+        return jsonify({
+            "message": "Account synced successfully",
+            "account_id": account_id,
+            "events_synced": events_synced
+        })
+        
+    except Exception as e:
+        logger.error(f"Error syncing Google account: {e}")
+        return jsonify({"error": "Failed to sync account"}), 500
 
 @app.route('/calendar/events')
 def get_calendar_events():

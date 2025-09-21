@@ -2,3 +2,8 @@
 env_template.txt
 venv
 .idea
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
