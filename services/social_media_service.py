@@ -74,41 +74,119 @@ class SocialMediaService:
             return {"success": False, "error": str(e)}
     
     def post_to_facebook(self, access_token: str, content: str) -> Dict[str, Any]:
-        """Post content to Facebook"""
+        """Post content to Facebook using Graph API"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info("Starting Facebook post process")
+        logger.info(f"Content length: {len(content)} characters")
+        logger.info(f"Content preview: {content[:100]}...")
+        logger.info(f"Access token present: {bool(access_token)}")
+        
         try:
-            # For now, we'll simulate posting since Facebook requires app review for posting permissions
-            # In a real implementation, you would need to:
-            # 1. Submit your app for Facebook review
-            # 2. Get approved for publishing permissions
-            # 3. Use the proper Facebook Graph API endpoints
-            
-            print(f"Facebook post simulation - Content: {content}")
-            print(f"Facebook post simulation - Access Token: {access_token[:20]}...")
-            
-            # Simulate successful posting
-            return {
-                "success": True, 
-                "post_id": f"simulated_facebook_post_{hash(content) % 10000}",
-                "message": "Post simulated successfully (Facebook posting requires app review)"
+            # First, get user info to verify the token and get user ID
+            user_info_url = "https://graph.facebook.com/v22.0/me"
+            user_headers = {
+                "Authorization": f"Bearer {access_token}"
             }
             
-            # Uncomment this when you have proper Facebook posting permissions:
-            # url = "https://graph.facebook.com/v18.0/me/feed"
-            # headers = {
-            #     "Authorization": f"Bearer {access_token}",
-            #     "Content-Type": "application/json"
-            # }
-            # post_data = {"message": content}
-            # response = requests.post(url, headers=headers, json=post_data)
-            # 
-            # if response.status_code == 200:
-            #     post_data = response.json()
-            #     return {"success": True, "post_id": post_data.get("id")}
-            # else:
-            #     return {"success": False, "error": f"Facebook API error: {response.text}"}
+            logger.info(f"Fetching user info from: {user_info_url}")
+            user_response = requests.get(user_info_url, headers=user_headers)
+            
+            logger.info(f"User info response status: {user_response.status_code}")
+            logger.info(f"User info response: {user_response.text}")
+            
+            if user_response.status_code != 200:
+                error_msg = f"Failed to get user info: {user_response.text}"
+                logger.error(error_msg)
+                return {
+                    "success": False, 
+                    "error": error_msg
+                }
+            
+            user_data = user_response.json()
+            user_id = user_data.get('id')
+            user_name = user_data.get('name', 'User')
+            
+            logger.info(f"User authenticated - ID: {user_id}, Name: {user_name}")
+            
+            # Try to post to user's feed
+            post_url = f"https://graph.facebook.com/v22.0/{user_id}/feed"
+            post_headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            post_data = {"message": content}
+            
+            logger.info(f"Attempting to post to Facebook feed: {post_url}")
+            logger.info(f"Post data: {post_data}")
+            
+            response = requests.post(post_url, headers=post_headers, json=post_data)
+            
+            logger.info(f"Facebook post response status: {response.status_code}")
+            logger.info(f"Facebook post response: {response.text}")
+            
+            if response.status_code == 200:
+                post_result = response.json()
+                post_id = post_result.get("id")
+                
+                logger.info(f"Successfully posted to Facebook - Post ID: {post_id}")
+                logger.info(f"Post result: {post_result}")
+                
+                return {
+                    "success": True,
+                    "post_id": post_id,
+                    "message": f"Successfully posted to Facebook as {user_name}"
+                }
+            else:
+                # If direct posting fails, try alternative approaches
+                error_data = response.json() if response.text else {}
+                error_message = error_data.get('error', {}).get('message', 'Unknown error')
+                
+                logger.warning(f"Direct posting failed with status {response.status_code}")
+                logger.warning(f"Error message: {error_message}")
+                logger.warning(f"Full error data: {error_data}")
+                
+                # Check if it's a permissions error or posting restriction
+                if ('permission' in error_message.lower() or 
+                    'scope' in error_message.lower() or 
+                    'publish_to_groups' in error_message.lower() or
+                    'pages_read_engagement' in error_message.lower() or
+                    'pages_manage_posts' in error_message.lower() or
+                    'requires app being installed' in error_message.lower()):
+                    
+                    logger.info("Facebook posting permission error detected, generating share URL as fallback")
+                    logger.info(f"Specific error: {error_message}")
+                    
+                    # Generate a share URL as fallback
+                    encoded_content = requests.utils.quote(content)
+                    facebook_share_url = f"https://www.facebook.com/sharer/sharer.php?u=&quote={encoded_content}"
+                    
+                    logger.info(f"Generated share URL: {facebook_share_url}")
+                    
+                    return {
+                        "success": True,
+                        "post_id": f"share_url_{hash(content) % 10000}",
+                        "message": "Facebook share URL generated (direct posting requires additional permissions)",
+                        "share_url": facebook_share_url,
+                        "user_name": user_name,
+                        "note": "Due to Facebook's API restrictions, this opens a share dialog for you to manually post the content. To enable direct posting, the app would need to be submitted for Facebook review with publish_to_groups or pages_manage_posts permissions."
+                    }
+                else:
+                    error_msg = f"Facebook API error: {error_message}"
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
         
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            error_msg = str(e)
+            logger.error(f"Exception in post_to_facebook: {error_msg}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"success": False, "error": error_msg}
     
     def post_to_platform(self, platform: str, access_token: str, content: str) -> Dict[str, Any]:
         """Post content to the specified platform"""
@@ -123,12 +201,12 @@ class SocialMediaService:
         """Get authorization URL for social media platform"""
         if platform == "linkedin":
             if not self.linkedin_client_id:
-                return "https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=mock_client_id&redirect_uri=http://localhost:8000/auth/linkedin/callback&state=state&scope=w_member_social,openid,profile,email"
-            return f"https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id={self.linkedin_client_id}&redirect_uri=http://localhost:8000/auth/linkedin/callback&state=state&scope=w_member_social,openid,profile,email"
+                return "https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=mock_client_id&redirect_uri=http://ec2-34-221-10-72.us-west-2.compute.amazonaws.com/auth/linkedin/callback&state=state&scope=w_member_social,openid,profile,email"
+            return f"https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id={self.linkedin_client_id}&redirect_uri=http://ec2-34-221-10-72.us-west-2.compute.amazonaws.com/auth/linkedin/callback&state=state&scope=w_member_social,openid,profile,email"
         elif platform == "facebook":
             if not self.facebook_app_id:
-                return "https://www.facebook.com/v18.0/dialog/oauth?client_id=mock_app_id&redirect_uri=http://localhost:8000/auth/facebook/callback&scope=email,public_profile,pages_manage_posts,pages_read_engagement&response_type=code&state=state"
-            return f"https://www.facebook.com/v18.0/dialog/oauth?client_id={self.facebook_app_id}&redirect_uri=http://localhost:8000/auth/facebook/callback&scope=public_profile,pages_show_list&response_type=code&state=state"
+                return "https://www.facebook.com/v22.0/dialog/oauth?client_id=mock_app_id&redirect_uri=http://ec2-34-221-10-72.us-west-2.compute.amazonaws.com/auth/facebook/callback&scope=public_profile,pages_show_list&response_type=code&state=state"
+            return f"https://www.facebook.com/v22.0/dialog/oauth?client_id={self.facebook_app_id}&redirect_uri=http://ec2-34-221-10-72.us-west-2.compute.amazonaws.com/auth/facebook/callback&scope=public_profile,pages_show_list&response_type=code&state=state"
         else:
             raise ValueError(f"Unsupported platform: {platform}")
     
@@ -151,7 +229,7 @@ class SocialMediaService:
                 "code": code,
                 "client_id": self.linkedin_client_id or "mock_client_id",
                 "client_secret": self.linkedin_client_secret or "mock_client_secret",
-                "redirect_uri": "http://localhost:8000/auth/linkedin/callback"
+                "redirect_uri": "http://ec2-34-221-10-72.us-west-2.compute.amazonaws.com/auth/linkedin/callback"
             }
             
             response = requests.post(token_url, data=data)
@@ -173,11 +251,11 @@ class SocialMediaService:
         """Handle Facebook OAuth callback"""
         try:
             # Exchange code for access token
-            token_url = "https://graph.facebook.com/v18.0/oauth/access_token"
+            token_url = "https://graph.facebook.com/v22.0/oauth/access_token"
             data = {
                 "client_id": self.facebook_app_id or "mock_app_id",
                 "client_secret": self.facebook_app_secret or "mock_app_secret",
-                "redirect_uri": "http://localhost:8000/auth/facebook/callback",
+                "redirect_uri": "http://ec2-34-221-10-72.us-west-2.compute.amazonaws.com/auth/facebook/callback",
                 "code": code
             }
             

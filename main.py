@@ -35,9 +35,16 @@ except Exception as e:
 try:
     from services.ai_service import AIService
     ai_service = AIService()
-    logger.info("AI service initialized")
+    if ai_service.is_available():
+        logger.info("AI service initialized and available")
+    else:
+        logger.warning("AI service initialized but not properly configured (no API key)")
+        ai_service = None
 except Exception as e:
     logger.warning(f"AI service not available: {e}")
+    logger.error(f"AI service initialization error: {type(e).__name__}: {e}")
+    import traceback
+    logger.error(f"AI service traceback: {traceback.format_exc()}")
     ai_service = None
 
 # Try to import Social Media service, fallback to mock if not available
@@ -165,7 +172,20 @@ def root():
 def health_check():
     return jsonify({
         "status": "healthy",
-        "message": "Backend is running successfully"
+        "message": "Backend is running successfully",
+        "services": {
+            "google_calendar": google_calendar_service is not None,
+            "recall": recall_service is not None,
+            "ai": ai_service is not None and (ai_service.is_available() if ai_service else False),
+            "social_media": social_media_service is not None
+        },
+        "completed_meetings": len(completed_meetings),
+        "scheduled_bots": len(scheduled_bots),
+        "ai_service_details": {
+            "initialized": ai_service is not None,
+            "available": ai_service.is_available() if ai_service else False,
+            "has_api_key": bool(ai_service.api_key) if ai_service else False
+        }
     })
 
 @app.route('/auth/google')
@@ -185,7 +205,7 @@ def google_auth():
     
     # Fallback to mock URL if service not available
     return jsonify({
-        "auth_url": "https://accounts.google.com/o/oauth2/auth?client_id=871559871580-9j8c3hi70u9pobf0u4mu6qg0ofue32ek.apps.googleusercontent.com&redirect_uri=http://localhost:8000/auth/google/callback&response_type=code&scope=openid email profile https://www.googleapis.com/auth/calendar.readonly",
+        "auth_url": "https://accounts.google.com/o/oauth2/auth?client_id=871559871580-9j8c3hi70u9pobf0u4mu6qg0ofue32ek.apps.googleusercontent.com&redirect_uri=http://ec2-34-221-10-72.us-west-2.compute.amazonaws.com/auth/google/callback&response_type=code&scope=openid email profile https://www.googleapis.com/auth/calendar.readonly",
         "state": "test_state"
     })
 
@@ -207,7 +227,7 @@ def linkedin_auth_callback():
                     "platform": "linkedin",
                     "status": "success"
                 }
-                frontend_url = f"http://localhost:3000/auth/success?{urlencode(auth_data)}"
+                frontend_url = f"http://post-meeting-ui.s3-website-us-west-2.amazonaws.com/auth/success?{urlencode(auth_data)}"
                 return redirect(frontend_url)
             else:
                 return jsonify({"error": result.get("error", "LinkedIn authentication failed")}), 400
@@ -236,7 +256,7 @@ def facebook_auth_callback():
                     "platform": "facebook",
                     "status": "success"
                 }
-                frontend_url = f"http://localhost:3000/auth/success?{urlencode(auth_data)}"
+                frontend_url = f"http://post-meeting-ui.s3-website-us-west-2.amazonaws.com/auth/success?{urlencode(auth_data)}"
                 return redirect(frontend_url)
             else:
                 return jsonify({"error": result.get("error", "Facebook authentication failed")}), 400
@@ -315,7 +335,7 @@ def google_auth_callback():
     
     # Redirect to frontend with auth data
     from urllib.parse import urlencode
-    frontend_url = f"http://localhost:3000/auth/success?{urlencode(auth_data)}"
+    frontend_url = f"http://post-meeting-ui.s3-website-us-west-2.amazonaws.com/auth/success?{urlencode(auth_data)}"
     return redirect(frontend_url)
 
 @app.route('/user/profile')
@@ -478,31 +498,11 @@ def get_calendar_events():
             })
             
         else:
-            # Fallback to mock data if service not available
-            logger.warning("Google Calendar service not available, using mock data")
+            # No Google Calendar service available
+            logger.warning("Google Calendar service not available")
             return jsonify({
-                "events": [
-                    {
-                        "id": 1,
-                        "title": "Team Meeting",
-                        "description": "Weekly team sync",
-                        "start_time": "2024-01-20T10:00:00Z",
-                        "end_time": "2024-01-20T11:00:00Z",
-                        "attendees": [{"email": "colleague@example.com"}],
-                        "notetaker_enabled": False,
-                        "google_event_id": "event123",
-                        "google_account_email": "test@example.com",
-                        "google_account_name": "Test User",
-                        "calendar_name": "Primary Calendar"
-                    }
-                ],
-                "accounts": [
-                    {
-                        "email": "test@example.com",
-                        "name": "Test User",
-                        "events_count": 1
-                    }
-                ]
+                "events": [],
+                "accounts": []
             })
             
     except Exception as e:
@@ -541,13 +541,17 @@ def toggle_notetaker(meeting_id):
                                 
                                 # Get join before minutes from settings
                                 join_before_minutes = user_settings.get("recallJoinBeforeMinutes", 5)
-                                
+                                logger.info('user_settings joibefore')
+                                logger.info(user_settings)
+                                logger.info(user_settings["recallJoinBeforeMinutes"])
+                                logger.info(user_settings.get("recallJoinBeforeMinutes"))
+
                                 # Schedule bot for this specific event
                                 logger.info(f"Event attendees before scheduling: {event.get('attendees', [])}")
                                 bot_schedule = recall_service.schedule_bot_for_event(
                                     event, join_before_minutes
                                 )
-                                
+
                                 if bot_schedule:
                                     scheduled_bots[meeting_id] = bot_schedule
                                     logger.info(f"Automatically scheduled bot for event {meeting_id}")
@@ -556,20 +560,20 @@ def toggle_notetaker(meeting_id):
                                 else:
                                     logger.warning(f"Failed to schedule bot for event {meeting_id}")
                                 break
-                        
+
                         if event_found:
                             break
-                            
+
                     except Exception as e:
                         logger.error(f"Error processing events for user {user_id}: {e}")
                         continue
-            
+
             if not event_found:
                 logger.warning(f"Event {meeting_id} not found in calendar events")
-                
+
         except Exception as e:
             logger.error(f"Error scheduling bot for event {meeting_id}: {e}")
-    
+
     return jsonify({
         "message": "Notetaker setting updated",
         "meeting_id": meeting_id,
@@ -582,7 +586,7 @@ def update_transcript(meeting_id):
     """Update meeting transcript"""
     data = request.get_json()
     transcript = data.get('transcript', '')
-    
+
     return jsonify({
         "message": "Transcript updated",
         "meeting_id": meeting_id
@@ -593,10 +597,10 @@ def generate_social_media_content(meeting_id):
     """Generate social media content from meeting transcript"""
     data = request.get_json()
     platform = data.get('platform', 'linkedin')
-    
+
     # Mock AI-generated content
     content = f"Just had an amazing meeting! Key insights: 1) Great discussion on project goals 2) Clear next steps identified 3) Excited about the collaboration! #{platform} #meeting #collaboration"
-    
+
     return jsonify({
         "content": content,
         "platform": platform
@@ -606,65 +610,95 @@ def generate_social_media_content(meeting_id):
 @app.route('/meetings/past')
 def get_past_meetings():
     """Get past meetings with transcripts and social content"""
+    logger.info("Starting past meetings retrieval")
+    logger.info(f"Total completed meetings in storage: {len(completed_meetings)}")
+
     try:
         # Return real completed meetings data
         past_meetings = []
-        
-        # for meeting_id, meeting_data in completed_meetings.items():
-        #     # Get the original calendar event data
-        #     original_event = None
-        #     for user_id, credentials in user_credentials.items():
-        #         try:
-        #             if google_calendar_service:
-        #                 events = google_calendar_service.get_calendar_events(credentials)
-        #                 for i, event in enumerate(events):
-        #                     event_id = f"{user_id}_{i}"
-        #                     if event_id == meeting_id:
-        #                         original_event = event
-        #                         break
-        #                 if original_event:
-        #                     break
-        #         except Exception as e:
-        #             logger.error(f"Error getting events for user {user_id}: {e}")
-        #             continue
-        #
-        #     if original_event:
-        #         # Use stored platform and attendees from completed meeting data
-        #         platform = meeting_data.get('platform', 'unknown')
-        #         attendees = meeting_data.get('attendees', [])
-        #
-        #         logger.info(f"Meeting {meeting_id} - attendees from meeting_data: {attendees}")
-        #         logger.info(f"Meeting {meeting_id} - attendees from original_event: {original_event.get('attendees', [])}")
-        #
-        #         # If no attendees in meeting data, try to get from original event
-        #         if not attendees:
-        #             attendees = original_event.get('attendees', [])
-        #             logger.info(f"Using attendees from original_event: {attendees}")
-        #
-        #         past_meeting = {
-        #             "id": meeting_id,
-        #             "title": meeting_data.get('title', original_event.get('title', 'Untitled Meeting')),
-        #             "start_time": original_event.get('start_time', ''),
-        #             "end_time": original_event.get('end_time', ''),
-        #             "attendees": attendees,
-        #             "platform": platform,
-        #             "transcript": meeting_data.get('transcript', ''),
-        #             "status": meeting_data.get('status', 'unknown'),
-        #             "completed_at": meeting_data.get('completed_at', ''),
-        #             "duration": meeting_data.get('duration', 0),
-        #             "media_url": meeting_data.get('media_url', ''),
-        #             "google_account_email": original_event.get('google_account_email', ''),
-        #             "google_account_name": original_event.get('google_account_name', '')
-        #         }
-        #         logger.info(f"Final past_meeting attendees: {past_meeting['attendees']}")
-        #         past_meetings.append(past_meeting)
+
+        logger.info("Processing completed meetings...")
+        for meeting_id, meeting_data in completed_meetings.items():
+            logger.info(f"Processing meeting {meeting_id}")
+            logger.info(f"Meeting data keys: {list(meeting_data.keys())}")
+            logger.info(f"Meeting title: {meeting_data.get('title', 'No title')}")
+            logger.info(f"Meeting status: {meeting_data.get('status', 'No status')}")
+            logger.info(f"Meeting platform: {meeting_data.get('platform', 'No platform')}")
+            logger.info(f"Meeting attendees: {meeting_data.get('attendees', [])}")
+            # Get the original calendar event data
+            original_event = None
+            logger.info(f"Looking for original event for meeting {meeting_id}")
+            logger.info(f"Total user credentials: {len(user_credentials)}")
+
+            for user_id, credentials in user_credentials.items():
+                logger.info(f"Checking user {user_id} for original event")
+                try:
+                    if google_calendar_service:
+                        logger.info(f"Fetching calendar events for user {user_id}")
+                        events = google_calendar_service.get_calendar_events(credentials)
+                        logger.info(f"Found {len(events)} events for user {user_id}")
+
+                        for i, event in enumerate(events):
+                            event_id = f"{user_id}_{i}"
+                            logger.info(f"Checking event {event_id} against meeting {meeting_id}")
+                            if event_id == meeting_id:
+                                original_event = event
+                                logger.info(f"Found matching original event: {event.get('title', 'No title')}")
+                                break
+                        if original_event:
+                            break
+                    else:
+                        logger.warning("Google Calendar service not available for original event lookup")
+                except Exception as e:
+                    logger.error(f"Error getting events for user {user_id}: {e}")
+                    continue
+
+            if original_event:
+                logger.info(f"Found original event for meeting {meeting_id}")
+                logger.info(f"Original event title: {original_event.get('title', 'No title')}")
+                logger.info(f"Original event attendees: {original_event.get('attendees', [])}")
+
+                # Use stored platform and attendees from completed meeting data
+                platform = meeting_data.get('platform', 'unknown')
+                attendees = meeting_data.get('attendees', [])
+
+                logger.info(f"Meeting {meeting_id} - attendees from meeting_data: {attendees}")
+                logger.info(f"Meeting {meeting_id} - attendees from original_event: {original_event.get('attendees', [])}")
+
+                # If no attendees in meeting data, try to get from original event
+                if not attendees:
+                    attendees = original_event.get('attendees', [])
+                    logger.info(f"Using attendees from original_event: {attendees}")
+
+                past_meeting = {
+                    "id": meeting_id,
+                    "title": meeting_data.get('title', original_event.get('title', 'Untitled Meeting')),
+                    "start_time": original_event.get('start_time', ''),
+                    "end_time": original_event.get('end_time', ''),
+                    "attendees": attendees,
+                    "platform": platform,
+                    "transcript": meeting_data.get('transcript', ''),
+                    "status": meeting_data.get('status', 'unknown'),
+                    "completed_at": meeting_data.get('completed_at', ''),
+                    "duration": meeting_data.get('duration', 0),
+                    "media_url": meeting_data.get('media_url', ''),
+                    "google_account_email": original_event.get('google_account_email', ''),
+                    "google_account_name": original_event.get('google_account_name', '')
+                }
+                logger.info(f"Final past_meeting attendees: {past_meeting['attendees']}")
+                logger.info(f"Final past_meeting platform: {past_meeting['platform']}")
+                logger.info(f"Final past_meeting title: {past_meeting['title']}")
+                past_meetings.append(past_meeting)
+            else:
+                logger.warning(f"No original event found for meeting {meeting_id}, skipping")
 
         # Sort by start time (most recent first)
-        # past_meetings.sort(key=lambda x: x.get('start_time', ''), reverse=True)
-        
+        past_meetings.sort(key=lambda x: x.get('start_time', ''), reverse=True)
+
         logger.info(f"Retrieved {len(past_meetings)} past meetings")
-        return jsonify({"meetings": [{'id': '100596518954887755561_0', 'title': 'testing', 'start_time': '2025-09-20T21:57:00+05:30', 'end_time': '2025-09-20T22:27:00+05:30', 'attendees': [], 'platform': 'google_meet', 'transcript': "Qusai Sadikot: But also I just scheduled this meeting to discuss about the company. So the company is going good. We are headed in the right direction. And yeah, let's keep up the good work. Thank you for joining, have a great day.", 'status': 'completed', 'completed_at': '', 'duration': 0, 'media_url': '', 'google_account_email': 'qusaisadikot@gmail.com', 'google_account_name': ''}]})
-        
+        return jsonify({"meetings": past_meetings })
+
+
     except Exception as e:
         logger.error(f"Error getting past meetings: {e}")
         return jsonify({"error": f"Failed to get past meetings: {str(e)}"}), 500
@@ -738,7 +772,7 @@ def connect_social_media_account(platform):
         else:
             # Fallback to mock URL if service not available
             return jsonify({
-                "auth_url": f"https://{platform}.com/oauth/authorize?client_id=mock_client_id&redirect_uri=http://localhost:8000/auth/{platform}/callback"
+                "auth_url": f"https://{platform}.com/oauth/authorize?client_id=mock_client_id&redirect_uri=http://ec2-34-221-10-72.us-west-2.compute.amazonaws.com/auth/{platform}/callback"
             })
     except Exception as e:
         logger.error(f"Error getting auth URL for {platform}: {e}")
@@ -747,31 +781,71 @@ def connect_social_media_account(platform):
 @app.route('/meetings/<meeting_id>/post/<platform>', methods=['POST'])
 def post_to_social_media(meeting_id, platform):
     """Post generated content to social media platform"""
+    logger.info(f"Starting social media post for meeting {meeting_id} to platform {platform}")
+    
     try:
         data = request.get_json() or {}
         access_token = data.get('access_token')
         content = data.get('content')
         
+        logger.info(f"Post request data - Meeting ID: {meeting_id}, Platform: {platform}")
+        logger.info(f"Access token present: {bool(access_token)}")
+        logger.info(f"Content length: {len(content) if content else 0} characters")
+        logger.info(f"Content preview: {content[:100] if content else 'None'}...")
+        
         if not access_token:
+            logger.warning(f"No access token provided for meeting {meeting_id} on platform {platform}")
             return jsonify({"error": "Access token is required"}), 400
         
         if not content:
+            logger.warning(f"No content provided for meeting {meeting_id} on platform {platform}")
             return jsonify({"error": "Content is required"}), 400
         
         if social_media_service:
+            logger.info(f"Calling social media service to post to {platform}")
             result = social_media_service.post_to_platform(platform, access_token, content)
+            
+            logger.info(f"Social media service response: {result}")
+            
             if result["success"]:
-                return jsonify({
-                    "message": f"Successfully posted to {platform}",
-                    "post_id": result.get("post_id")
-                })
+                post_id = result.get("post_id")
+                message = result.get("message", f"Successfully posted to {platform}")
+                
+                logger.info(f"Successfully posted to {platform} - Post ID: {post_id}")
+                logger.info(f"Success message: {message}")
+                
+                response_data = {
+                    "message": message,
+                    "post_id": post_id
+                }
+                
+                # Include additional data if present (like share_url for Facebook)
+                if "share_url" in result:
+                    response_data["share_url"] = result["share_url"]
+                    logger.info(f"Share URL generated: {result['share_url']}")
+                
+                if "user_name" in result:
+                    response_data["user_name"] = result["user_name"]
+                    logger.info(f"User name: {result['user_name']}")
+                
+                if "note" in result:
+                    response_data["note"] = result["note"]
+                    logger.info(f"Note: {result['note']}")
+                
+                return jsonify(response_data)
             else:
-                return jsonify({"error": result.get("error", "Failed to post")}), 500
+                error_msg = result.get("error", "Failed to post")
+                logger.error(f"Failed to post to {platform}: {error_msg}")
+                return jsonify({"error": error_msg}), 500
         else:
+            logger.error("Social media service not available")
             return jsonify({"error": "Social media service not available"}), 503
             
     except Exception as e:
-        logger.error(f"Error posting to social media: {e}")
+        logger.error(f"Unexpected error posting to social media for meeting {meeting_id} on platform {platform}: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({"error": "Failed to post to social media"}), 500
 
 # Recall.ai Bot Management Endpoints
@@ -946,44 +1020,102 @@ def get_meeting_transcript(meeting_id):
 @app.route('/meetings/<meeting_id>/follow-up-email', methods=['POST'])
 def generate_follow_up_email(meeting_id):
     """Generate follow-up email for a specific meeting"""
+    logger.info(f"Starting follow-up email generation for meeting {meeting_id}")
+    
     try:
+        # Check if meeting exists in completed meetings
         if meeting_id not in completed_meetings:
+            logger.warning(f"Meeting {meeting_id} not found in completed meetings")
+            logger.info(f"Available completed meetings: {list(completed_meetings.keys())}")
             return jsonify({"error": "Meeting not found or not completed"}), 404
         
+        logger.info(f"Found meeting {meeting_id} in completed meetings")
         meeting_data = completed_meetings[meeting_id]
+        logger.info(f"Meeting data keys: {list(meeting_data.keys())}")
+        
+        # Get transcript
         transcript = meeting_data.get('transcript', '')
+        logger.info(f"Transcript length: {len(transcript)} characters")
+        logger.info(f"Transcript preview: {transcript[:100]}...")
         
         if not transcript:
+            logger.warning(f"No transcript available for meeting {meeting_id}")
             return jsonify({"error": "No transcript available for this meeting"}), 400
         
         # Get meeting title from original event
         meeting_title = "Meeting"
-        for user_id, credentials in user_credentials.items():
-            try:
-                if google_calendar_service:
-                    events = google_calendar_service.get_calendar_events(credentials)
-                    for i, event in enumerate(events):
-                        event_id = f"{user_id}_{i}"
-                        if event_id == meeting_id:
-                            meeting_title = event.get('title', 'Meeting')
-                            break
-            except Exception as e:
-                logger.error(f"Error getting events for user {user_id}: {e}")
-                continue
+        logger.info(f"Using default meeting title: {meeting_title}")
         
+        # Get attendees
+        attendees = meeting_data.get('attendees', [])
+        logger.info(f"Meeting attendees: {attendees}")
+        logger.info(f"Number of attendees: {len(attendees)}")
+        
+        # Check AI service availability
         if ai_service:
-            attendees = meeting_data.get('attendees', [])
-            email_content = ai_service.generate_follow_up_email(transcript, meeting_title, attendees)
+            logger.info("AI service is available, generating follow-up email")
+            logger.info(f"Calling AI service with transcript length: {len(transcript)}")
+            logger.info(f"Meeting title: {meeting_title}")
+            logger.info(f"Attendees: {attendees}")
+            
+            try:
+                email_content = ai_service.generate_follow_up_email(transcript, meeting_title, attendees)
+                logger.info(f"Successfully generated follow-up email")
+                logger.info(f"Email content length: {len(email_content)} characters")
+                logger.info(f"Email content preview: {email_content[:200]}...")
+                
+                response_data = {
+                    "meeting_id": meeting_id,
+                    "email_content": email_content,
+                    "meeting_title": meeting_title
+                }
+                logger.info(f"Returning follow-up email response for meeting {meeting_id}")
+                return jsonify(response_data)
+                
+            except Exception as ai_error:
+                logger.error(f"AI service error during follow-up email generation: {ai_error}")
+                logger.error(f"AI error type: {type(ai_error).__name__}")
+                import traceback
+                logger.error(f"AI error traceback: {traceback.format_exc()}")
+                return jsonify({"error": f"AI service error: {str(ai_error)}"}), 500
+        else:
+            logger.warning("AI service not available for follow-up email generation")
+            # Provide a fallback mock email
+            mock_email = f"""
+Subject: Follow-up on {meeting_title}
+
+Dear Team,
+
+Thank you for attending today's meeting. Here's a summary of our discussion:
+
+Key Points Discussed:
+- We covered the main agenda items for {meeting_title}
+- Important decisions were made regarding our project direction
+- Next steps were identified for moving forward
+
+Action Items:
+- Please review the meeting notes and provide feedback
+- Follow up on assigned tasks by the agreed deadline
+- Schedule the next meeting as discussed
+
+Thank you for your time and valuable input.
+
+Best regards,
+Meeting Organizer
+"""
+            logger.info("Returning mock follow-up email due to AI service unavailability")
             return jsonify({
                 "meeting_id": meeting_id,
-                "email_content": email_content,
-                "meeting_title": meeting_title
+                "email_content": mock_email.strip(),
+                "meeting_title": meeting_title,
+                "note": "AI service not available - mock email generated"
             })
-        else:
-            return jsonify({"error": "AI service not available"}), 503
             
     except Exception as e:
-        logger.error(f"Error generating follow-up email: {e}")
+        logger.error(f"Error generating follow-up email for meeting {meeting_id}: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({"error": "Failed to generate follow-up email"}), 500
 
 @app.route('/meetings/<meeting_id>/social-post', methods=['POST'])
