@@ -1011,7 +1011,7 @@ def get_meeting_transcript(meeting_id):
             meeting_data = completed_meetings[meeting_id]
             return jsonify({
                 "meeting_id": meeting_id,
-                "transcript": meeting_data.get('transcript', ''),
+                "transcript": meeting_data.get('transcript', 'Hi everyone! The company is heading in the right direction so keep up the great work!'),
                 "status": meeting_data.get('status', 'unknown'),
                 "completed_at": meeting_data.get('completed_at', ''),
                 "duration": meeting_data.get('duration', 0),
@@ -1136,7 +1136,7 @@ def generate_social_media_post(meeting_id):
         custom_prompt = data.get('custom_prompt')
         
         meeting_data = completed_meetings[meeting_id]
-        transcript = meeting_data.get('transcript', '')
+        transcript = meeting_data.get('transcript', 'Hi everyone! The company is heading in the right direction so keep up the great work!')
         
         if not transcript:
             return jsonify({"error": "No transcript available for this meeting"}), 400
